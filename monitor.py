@@ -4,6 +4,10 @@ import json
 import os
 from datetime import datetime
 import sys
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # ===================== CONFIG =====================
 SUBREDDITS = ["entrepreneur", "forhire", "smallbusiness"]
@@ -15,12 +19,37 @@ CHECK_INTERVAL = 60
 # File to store seen post IDs (prevents duplicate alerts)
 SEEN_FILE = "seen.json"
 
+# Telegram Configuration
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
 # User-Agent header (Reddit requires this)
 HEADERS = {
     "User-Agent": "LocalRedditKeywordMonitor/1.0 (by /u/yourusername)"
 }
 
 # =================================================
+
+def send_telegram_message(text):
+    """Send notification to Telegram."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("⚠️ Telegram not configured (skipping notification)")
+        return False
+    
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text,
+        "parse_mode": "HTML"
+    }
+    try:
+        response = requests.post(url, json=payload, timeout=10)
+        if response.status_code != 200:
+            print(f"Telegram error: {response.text}")
+        return response.status_code == 200
+    except Exception as e:
+        print(f"Failed to send Telegram message: {e}")
+        return False
 
 def load_seen_posts():
     """Load previously seen post IDs from JSON file."""
@@ -57,20 +86,19 @@ def contains_keyword(text, keywords):
     return any(kw.lower() in text_lower for kw in keywords)
 
 def main():
-    print("🚀 Reddit Keyword Monitor Started")
-    print(f"Monitoring subreddits: {', '.join(SUBREDDITS)}")
-    print(f"Keywords: {', '.join(KEYWORDS)}")
-    print(f"Checking every {CHECK_INTERVAL} seconds...\n")
+    print("🚀 Reddit Keyword Monitor with Telegram Started")
+    print(f"Subreddits: {', '.join(SUBREDDITS)}")
+    print(f"Keywords: {', '.join(KEYWORDS)}\n")
+    
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("⚠️ Warning: Telegram is not configured. Check your .env file.\n")
     
     seen = load_seen_posts()
-    print(f"Loaded {len(seen)} previously seen posts.\n")
+    print(f"Loaded {len(seen)} seen posts.\n")
     
     while True:
         try:
-            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            print(f"[{current_time}] Checking for new posts...")
-            
-            new_matches = 0
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Checking...")
             
             for sub in SUBREDDITS:
                 posts = fetch_new_posts(sub)
@@ -79,44 +107,46 @@ def main():
                     post = post_data["data"]
                     post_id = post["id"]
                     
-                    # Skip if already seen
                     if post_id in seen:
                         continue
                     
                     title = post["title"]
                     author = post.get("author", "[deleted]")
-                    url = f"https://reddit.com{post['permalink']}"
+                    link = f"https://reddit.com{post['permalink']}"
                     
-                    # Check title and selftext for keywords
                     if (contains_keyword(title, KEYWORDS) or 
                         contains_keyword(post.get("selftext", ""), KEYWORDS)):
                         
+                        # Prepare message
+                        message = f"""
+🔔 <b>New Match Found!</b>
+
+📌 Subreddit: r/{sub}
+👤 Author: u/{author}
+🔖 Title: {title}
+🔗 Link: {link}
+                        """.strip()
+                        
                         print("\n" + "="*80)
-                        print(f"🔍 MATCH FOUND in r/{sub}")
+                        print(f"🔍 MATCH in r/{sub}")
                         print(f"Title: {title}")
-                        print(f"Author: u/{author}")
-                        print(f"Link: {url}")
+                        print(f"Link: {link}")
                         print("="*80 + "\n")
                         
-                        new_matches += 1
+                        # Send to Telegram
+                        send_telegram_message(message)
+                        
                         seen.add(post_id)
             
-            if new_matches == 0:
-                print("No new matches.")
-            else:
-                print(f"Found {new_matches} new matching post(s).")
-            
             save_seen_posts(seen)
-            print(f"Next check in {CHECK_INTERVAL} seconds...\n")
-            
             time.sleep(CHECK_INTERVAL)
             
         except KeyboardInterrupt:
-            print("\n👋 Monitor stopped by user.")
+            print("\n👋 Monitor stopped.")
             save_seen_posts(seen)
             break
         except Exception as e:
-            print(f"Unexpected error: {e}")
+            print(f"Error: {e}")
             time.sleep(CHECK_INTERVAL)
 
 if __name__ == "__main__":
