@@ -3,37 +3,48 @@ import time
 import json
 import os
 from datetime import datetime
-import sys
-from dotenv import load_dotenv
-
-# Load environment variables
-load_dotenv()
 
 # ===================== CONFIG =====================
-SUBREDDITS = ["entrepreneur", "forhire", "smallbusiness"]
-KEYWORDS = ["automation", "scraper", "website", "bot", "freelance", "hiring"]
+CONFIG_FILE = "config.json"
 
-# How often to check (seconds)
-CHECK_INTERVAL = 60
+def load_config():
+    """Load configuration from config.json"""
+    if not os.path.exists(CONFIG_FILE):
+        print(f"❌ Error: {CONFIG_FILE} not found!")
+        print("Please create the config.json file first.")
+        exit(1)
+    
+    try:
+        with open(CONFIG_FILE, "r") as f:
+            config = json.load(f)
+        
+        # Validate essential fields
+        if not config.get("telegram", {}).get("bot_token") or not config.get("telegram", {}).get("chat_id"):
+            print("⚠️ Warning: Telegram bot_token or chat_id is missing in config.json")
+        
+        return config
+    except Exception as e:
+        print(f"❌ Error reading config.json: {e}")
+        exit(1)
 
-# File to store seen post IDs (prevents duplicate alerts)
-SEEN_FILE = "seen.json"
+# Load config
+config = load_config()
 
-# Telegram Configuration
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+SUBREDDITS = config["subreddits"]
+KEYWORDS = config["keywords"]
+CHECK_INTERVAL = config["check_interval"]
+TELEGRAM_BOT_TOKEN = config["telegram"]["bot_token"]
+TELEGRAM_CHAT_ID = config["telegram"]["chat_id"]
+USER_AGENT = config.get("user_agent", "LocalRedditKeywordMonitor/1.0")
 
-# User-Agent header (Reddit requires this)
-HEADERS = {
-    "User-Agent": "LocalRedditKeywordMonitor/1.0 (by /u/yourusername)"
-}
+HEADERS = {"User-Agent": USER_AGENT}
 
 # =================================================
 
 def send_telegram_message(text):
     """Send notification to Telegram."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("⚠️ Telegram not configured (skipping notification)")
+        print("⚠️ Telegram not configured.")
         return False
     
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -44,61 +55,55 @@ def send_telegram_message(text):
     }
     try:
         response = requests.post(url, json=payload, timeout=10)
-        if response.status_code != 200:
-            print(f"Telegram error: {response.text}")
         return response.status_code == 200
     except Exception as e:
-        print(f"Failed to send Telegram message: {e}")
+        print(f"Failed to send Telegram: {e}")
         return False
 
 def load_seen_posts():
-    """Load previously seen post IDs from JSON file."""
-    if os.path.exists(SEEN_FILE):
+    if os.path.exists("seen.json"):
         try:
-            with open(SEEN_FILE, "r") as f:
+            with open("seen.json", "r") as f:
                 return set(json.load(f))
         except:
             return set()
     return set()
 
 def save_seen_posts(seen):
-    """Save seen post IDs to JSON file."""
-    with open(SEEN_FILE, "w") as f:
+    with open("seen.json", "w") as f:
         json.dump(list(seen), f)
 
 def fetch_new_posts(subreddit):
-    """Fetch newest posts from a subreddit using Reddit's public JSON API."""
     url = f"https://www.reddit.com/r/{subreddit}/new.json?limit=20"
     try:
         response = requests.get(url, headers=HEADERS, timeout=10)
         if response.status_code == 200:
             return response.json()["data"]["children"]
         else:
-            print(f"Error fetching r/{subreddit}: {response.status_code}")
+            print(f"Error {response.status_code} fetching r/{subreddit}")
             return []
     except Exception as e:
         print(f"Request failed for r/{subreddit}: {e}")
         return []
 
 def contains_keyword(text, keywords):
-    """Case-insensitive keyword search."""
+    if not text:
+        return False
     text_lower = text.lower()
     return any(kw.lower() in text_lower for kw in keywords)
 
 def main():
-    print("🚀 Reddit Keyword Monitor with Telegram Started")
-    print(f"Subreddits: {', '.join(SUBREDDITS)}")
-    print(f"Keywords: {', '.join(KEYWORDS)}\n")
-    
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("⚠️ Warning: Telegram is not configured. Check your .env file.\n")
+    print("🚀 Reddit Keyword Monitor Started (Config from config.json)")
+    print(f"Subreddits : {', '.join(SUBREDDITS)}")
+    print(f"Keywords   : {', '.join(KEYWORDS)}")
+    print(f"Interval   : {CHECK_INTERVAL} seconds\n")
     
     seen = load_seen_posts()
-    print(f"Loaded {len(seen)} seen posts.\n")
+    print(f"Loaded {len(seen)} previously seen posts.\n")
     
     while True:
         try:
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Checking...")
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Checking new posts...")
             
             for sub in SUBREDDITS:
                 posts = fetch_new_posts(sub)
@@ -114,10 +119,8 @@ def main():
                     author = post.get("author", "[deleted]")
                     link = f"https://reddit.com{post['permalink']}"
                     
-                    if (contains_keyword(title, KEYWORDS) or 
-                        contains_keyword(post.get("selftext", ""), KEYWORDS)):
+                    if contains_keyword(title, KEYWORDS) or contains_keyword(post.get("selftext", ""), KEYWORDS):
                         
-                        # Prepare message
                         message = f"""
 🔔 <b>New Match Found!</b>
 
@@ -131,22 +134,20 @@ def main():
                         print(f"🔍 MATCH in r/{sub}")
                         print(f"Title: {title}")
                         print(f"Link: {link}")
-                        print("="*80 + "\n")
+                        print("="*80)
                         
-                        # Send to Telegram
                         send_telegram_message(message)
-                        
                         seen.add(post_id)
             
             save_seen_posts(seen)
             time.sleep(CHECK_INTERVAL)
             
         except KeyboardInterrupt:
-            print("\n👋 Monitor stopped.")
+            print("\n👋 Monitor stopped by user.")
             save_seen_posts(seen)
             break
         except Exception as e:
-            print(f"Error: {e}")
+            print(f"Unexpected error: {e}")
             time.sleep(CHECK_INTERVAL)
 
 if __name__ == "__main__":
